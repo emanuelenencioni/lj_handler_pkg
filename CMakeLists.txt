@@ -16,6 +16,7 @@ find_package(rclcpp REQUIRED)
 find_package(apriltag_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 add_executable(${PROJECT_NAME} src/lj_handler.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -29,6 +30,7 @@ ament_target_dependencies(
   "apriltag_msgs"
   "tf2"
   "tf2_ros"
+  "geometry_msgs"
 )
 
 # Link LabJackM library

@@ -2,9 +2,7 @@
 #define LJ_HANDLER_HPP
 
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <tf2_ros/transform_listener.h>
-#include <tf2_ros/buffer.h>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <LabJackM.h>
 #include <string>
 #include <vector>
@@ -16,7 +14,7 @@ public:
   ~LJHandlerNode();
 
 private:
-  void timer_callback();
+  void pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
   void set_steering_angle(double steering_angle_deg);
   int read_nominal_voltages(double& nom_vs_master, double& nom_vs_slave);
   
@@ -27,16 +25,15 @@ private:
   double min_perc_;
   double max_perc_;
   double max_steering_angle_;
+  double k_steering_; // Steering gain factor
   std::vector<std::string> dac_names_;
   
-  // TF2 variables
-  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
-  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-  std::string target_frame_;
-  std::string source_frame_;
-  double transform_timeout_sec_;
+  // Timeout for pose messages
+  double pose_timeout_sec_;
+  rclcpp::Time last_pose_time_;
   
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_sub_;
+  rclcpp::TimerBase::SharedPtr safety_timer_;
   
   static constexpr int INITIAL_ERR_ADDRESS = -1;
 };

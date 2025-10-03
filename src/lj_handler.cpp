@@ -1,6 +1,5 @@
 #include "lj_handler_pkg/lj_handler.hpp"
 #include <cmath>
-#include <tf2/exceptions.h>
 
 LJHandlerNode::LJHandlerNode() : Node("lj_handler")
 {
@@ -10,10 +9,9 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   this->declare_parameter<double>("min_perc", 0.15);
   this->declare_parameter<double>("max_perc", 0.85);
   this->declare_parameter<double>("max_steering_angle", 30.0); // degrees
-  this->declare_parameter<std::string>("target_frame", "base_link");
-  this->declare_parameter<std::string>("source_frame", "front_vehicle");
-  this->declare_parameter<double>("update_rate", 20.0); // Hz
-  this->declare_parameter<double>("transform_timeout", 0.5); // seconds
+  this->declare_parameter<double>("k_steering", 10.0); // Steering gain factor
+  this->declare_parameter<double>("pose_timeout", 0.5); // seconds
+  this->declare_parameter<std::string>("pose_topic", "/tag_pose"); // Topic name
   
   // Get parameters
   nominal_vs_master_pin_ = this->get_parameter("nominal_vs_master_pin").as_string();
@@ -21,11 +19,12 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   min_perc_ = this->get_parameter("min_perc").as_double();
   max_perc_ = this->get_parameter("max_perc").as_double();
   max_steering_angle_ = this->get_parameter("max_steering_angle").as_double();
-  target_frame_ = this->get_parameter("target_frame").as_string();
-  source_frame_ = this->get_parameter("source_frame").as_string();
-  transform_timeout_sec_ = this->get_parameter("transform_timeout").as_double();
+  k_steering_ = this->get_parameter("k_steering").as_double();
+  pose_timeout_sec_ = this->get_parameter("pose_timeout").as_double();
+  std::string pose_topic = this->get_parameter("pose_topic").as_string();
   
-  double update_rate = this->get_parameter("update_rate").as_double();
+  // Initialize last pose time to current time
+  last_pose_time_ = this->get_clock()->now();
   
   // Open LabJack T7
   int err = LJM_Open(LJM_dtT7, LJM_ctUSB, "ANY", &handle_);
@@ -42,19 +41,15 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   // DAC output names: TDAC0=Master1, TDAC1=Master2, TDAC2=Slave1, TDAC3=Slave2
   dac_names_ = {"TDAC0", "TDAC1", "TDAC2", "TDAC3"};
   
-  // Initialize TF2
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  // Create subscription to pose topic
+  pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    pose_topic, 10,
+    std::bind(&LJHandlerNode::pose_callback, this, std::placeholders::_1));
   
-  // Create timer for periodic transform lookup
-  auto timer_period = std::chrono::duration<double>(1.0 / update_rate);
-  timer_ = this->create_wall_timer(
-    std::chrono::duration_cast<std::chrono::milliseconds>(timer_period),
-    std::bind(&LJHandlerNode::timer_callback, this));
   
   RCLCPP_INFO(this->get_logger(), "LJ Handler Node initialized");
-  RCLCPP_INFO(this->get_logger(), "Looking for transform from '%s' to '%s'", 
-              target_frame_.c_str(), source_frame_.c_str());
+  RCLCPP_INFO(this->get_logger(), "Subscribing to pose topic: '%s'", pose_topic.c_str());
+  RCLCPP_INFO(this->get_logger(), "Steering gain factor: %.2f", k_steering_);
 }
 
 LJHandlerNode::~LJHandlerNode()
@@ -70,47 +65,30 @@ LJHandlerNode::~LJHandlerNode()
   }
 }
 
-void LJHandlerNode::timer_callback()
+void LJHandlerNode::pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
-  geometry_msgs::msg::TransformStamped transform_stamped;
+  // Update last pose time
+  last_pose_time_ = this->get_clock()->now();
   
-  try {
-    // Look up the transform with a timeout
-    transform_stamped = tf_buffer_->lookupTransform(target_frame_, source_frame_, tf2::TimePointZero,
-                                                        tf2::durationFromSec(0.05)); // Short timeout for lookup
-    
-    // Check if transform is too old
-    rclcpp::Time transform_time(transform_stamped.header.stamp);
-    double age = (this->get_clock()->now() - transform_time).seconds();
-    
-    if (age > transform_timeout_sec_) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                           "Transform is too old (%.2f s), setting steering to straight", age);
-      set_steering_angle(0.0);
-      return;
-    }
-    
-    // Extract y-position from transform
-    double y_position = transform_stamped.transform.translation.y;
-    
-    // Simple proportional control: map y position to steering angle
-    double k_steering = 10.0; // Gain factor (adjust as needed)
-    double steering_angle = std::atan(k_steering * y_position) * 180.0 / M_PI;
-    
-    // Clamp to max steering angle
-    steering_angle = std::max(-max_steering_angle_, std::min(max_steering_angle_, steering_angle));
-    
-    RCLCPP_DEBUG(this->get_logger(), "Y position: %.3f m -> Steering angle: %.2f deg", 
-                 y_position, steering_angle);
-    
-    // Apply steering
-    set_steering_angle(steering_angle);
-    
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                         "Could not get transform: %s. Setting steering to straight.", ex.what());
-    set_steering_angle(0.0);
-  }
+  // Extract y-position from pose (covariance is ignored for now)
+  double y_position = msg->pose.pose.position.y;
+  double x_position = msg->pose.pose.position.x;
+  
+  // Calculate steering angle using arctangent
+  // This gives the angle needed to point towards the target
+  double steering_angle = std::atan2(y_position, x_position) * 180.0 / M_PI;
+  
+  // Alternative: Simple proportional control based on y-position only
+  // double steering_angle = std::atan(k_steering_ * y_position) * 180.0 / M_PI;
+  
+  // Clamp to max steering angle
+  steering_angle = std::max(-max_steering_angle_, std::min(max_steering_angle_, steering_angle));
+  
+  RCLCPP_DEBUG(this->get_logger(), "Pose: (x=%.3f, y=%.3f) -> Steering angle: %.2f deg", 
+               x_position, y_position, steering_angle);
+  
+  // Apply steering
+  set_steering_angle(steering_angle);
 }
 
 void LJHandlerNode::set_steering_angle(double steering_angle_deg)

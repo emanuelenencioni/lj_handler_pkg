@@ -123,9 +123,11 @@ void LJHandlerNode::set_steering_angle(double steering_angle_deg)
     return;
   }
   
-  // Map steering angle (-max_steering_angle to +max_steering_angle) to voltage ratio (0.0 to 1.0)
-  // -max_angle -> 0.0, 0 -> 0.5, +max_angle -> 1.0
-  double master1_ratio = (steering_angle_deg + max_steering_angle_) / (2.0 * max_steering_angle_);
+  // Map steering angle to voltage ratio
+  // -max_angle -> 0.0 (full left)
+  //  0° -> 0.5 (straight/center)
+  // +max_angle -> 1.0 (full right)
+  double master1_ratio = 0.5 + (steering_angle_deg / (2.0 * max_steering_angle_));
   master1_ratio = std::max(0.0, std::min(1.0, master1_ratio)); // Clamp to [0, 1]
   
   // Calculate voltage limits
@@ -164,7 +166,7 @@ void LJHandlerNode::set_steering_angle(double steering_angle_deg)
     return;
   }
   
-  double steering_percentage = (master1_ratio * 200.0) - 100.0;
+  double steering_percentage = (master1_ratio - 0.5) * 200.0;
   RCLCPP_INFO(this->get_logger(), 
               "Angle: %.1f° (%.1f%%) -> M1: %.2fV, S1: %.2fV | M2: %.2fV, S2: %.2fV",
               steering_angle_deg, steering_percentage,

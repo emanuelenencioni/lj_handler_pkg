@@ -20,8 +20,8 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   this->declare_parameter<double>("steering_max_perc", 0.85);
   
   // Declare percentage limits for throttle/brake
-  this->declare_parameter<double>("throttle_min_perc", 0.15);
-  this->declare_parameter<double>("throttle_max_perc", 0.85);
+  this->declare_parameter<double>("throttle_min_perc", 0.23);
+  this->declare_parameter<double>("throttle_max_perc", 0.77);
   
   // Declare steering parameters
   this->declare_parameter<double>("max_steering_angle", melex_max_deg); // degrees
@@ -288,7 +288,7 @@ void LJHandlerNode::set_throttle_brake(double throttle_value)
   slave1_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave1_voltage));
   
   // Second pair (M2, S2) works in opposition
-  double master2_ratio = master1_ratio;
+  double master2_ratio = 1- master1_ratio;
   double master2_voltage = nom_vs_accbrake_master * master2_ratio;
   master2_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master2_voltage));
 

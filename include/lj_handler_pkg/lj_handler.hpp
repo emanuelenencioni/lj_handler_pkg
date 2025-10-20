@@ -59,7 +59,7 @@ private:
   
   // Steering parameters
   double max_steering_angle_;
-  double k_steering_;
+  double steering_clip_;
 
   // Steering subscription
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr steering_sub_;

@@ -25,7 +25,7 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   
   // Declare steering parameters
   this->declare_parameter<double>("max_steering_angle", melex_max_deg); // degrees
-  this->declare_parameter<double>("k_steering", 5.0); // Steering gain factor
+  this->declare_parameter<double>("steering_clip", 20); // Steering clip factor in degrees
   
   // Declare timeout parameters
   this->declare_parameter<double>("pose_timeout", 0.5); // seconds
@@ -48,12 +48,12 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   
   steering_min_perc_ = this->get_parameter("steering_min_perc").as_double();
   steering_max_perc_ = this->get_parameter("steering_max_perc").as_double();
+  steering_clip_ = this->get_parameter("steering_clip").as_double();
   
   throttle_min_perc_ = this->get_parameter("throttle_min_perc").as_double();
   throttle_max_perc_ = this->get_parameter("throttle_max_perc").as_double();
   
   max_steering_angle_ = melex_max_deg;
-  k_steering_ = this->get_parameter("k_steering").as_double();
   
   steering_timeout_sec_ = this->get_parameter("pose_timeout").as_double();
   throttle_timeout_sec_ = this->get_parameter("throttle_timeout").as_double();
@@ -130,7 +130,7 @@ void LJHandlerNode::steering_callback(const std_msgs::msg::Float32::SharedPtr ms
   double steering_deg = msg->data * 180.0 / M_PI;
   
   // Clamp to max steering angle
-  steering_deg = std::max(-max_steering_angle_, std::min(max_steering_angle_, steering_deg));
+  steering_deg = std::max(-steering_clip_, std::min(steering_clip_, steering_deg));
   
   RCLCPP_DEBUG(this->get_logger(), "Steering command: %.2f rad (%.2f deg)", 
                msg->data, steering_deg);

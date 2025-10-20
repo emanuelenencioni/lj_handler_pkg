@@ -79,11 +79,11 @@ def generate_launch_description():
         default_value='29.74',
         description='Maximum steering angle in degrees (calculated from vehicle geometry)'
     )
-    
-    k_steering_arg = DeclareLaunchArgument(
-        'k_steering',
-        default_value='5.0',
-        description='Steering gain factor'
+
+    steering_clip_arg = DeclareLaunchArgument(
+        'steering_clip',
+        default_value='20.0',
+        description='Steering clip factor in degrees'
     )
     
     # Declare timeout parameters
@@ -125,6 +125,7 @@ def generate_launch_description():
         description='Log level (debug, info, warn, error, fatal)'
     )
     
+    
     # Determine log level from DEBUG environment variable or launch argument
     log_level = 'debug' if DEBUG else 'info'
     
@@ -146,7 +147,7 @@ def generate_launch_description():
             'throttle_min_perc': LaunchConfiguration('throttle_min_perc'),
             'throttle_max_perc': LaunchConfiguration('throttle_max_perc'),
             'max_steering_angle': LaunchConfiguration('max_steering_angle'),
-            'k_steering': LaunchConfiguration('k_steering'),
+            'steering_clip': LaunchConfiguration('steering_clip'),
             'pose_timeout': LaunchConfiguration('pose_timeout'),
             'throttle_timeout': LaunchConfiguration('throttle_timeout'),
             'safety_check_period': LaunchConfiguration('safety_check_period'),
@@ -174,7 +175,7 @@ def generate_launch_description():
         throttle_max_perc_arg,
         # Steering parameters
         max_steering_angle_arg,
-        k_steering_arg,
+        steering_clip_arg,
         # Timeouts
         pose_timeout_arg,
         throttle_timeout_arg,

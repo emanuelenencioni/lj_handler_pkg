@@ -68,6 +68,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr steering_sub_;
   rclcpp::Time last_steering_time_;
   double steering_timeout_sec_;
+  double brake_perc;
 
   // Throttle/Brake subscription
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr throttle_sub_;

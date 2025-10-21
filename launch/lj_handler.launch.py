@@ -114,8 +114,13 @@ def generate_launch_description():
     
     throttle_topic_arg = DeclareLaunchArgument(
         'throttle_topic',
-        default_value='/follower/acceleration_cmd',
+        default_value='/follower/pedal_cmd',
         description='Topic for throttle/brake commands (Float32, -1.0 to 1.0)'
+    )
+    brake_topic_arg = DeclareLaunchArgument(
+        'brake_topic',
+        default_value='/follower/brake_cmd',
+        description='Topic for brake commands (Float32, -1.0 to 1.0)'
     )
     
     # Declare log level
@@ -153,6 +158,7 @@ def generate_launch_description():
             'safety_check_period': LaunchConfiguration('safety_check_period'),
             'steering_topic': LaunchConfiguration('steering_topic'),
             'throttle_topic': LaunchConfiguration('throttle_topic'),
+            'brake_topic': LaunchConfiguration('brake_topic'),
         }],
         arguments=['--ros-args', '--log-level', log_level],
         emulate_tty=True,
@@ -183,6 +189,7 @@ def generate_launch_description():
         # Topics
         steering_topic_arg,
         throttle_topic_arg,
+        brake_topic_arg,
         # Logging
         log_level_arg,
         # Node

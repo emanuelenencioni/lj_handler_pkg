@@ -17,6 +17,7 @@ public:
 private:
   void steering_callback(const std_msgs::msg::Float32::SharedPtr msg);
   void throttle_callback(const std_msgs::msg::Float32::SharedPtr msg);
+  void brake_callback(const std_msgs::msg::Float32::SharedPtr msg);
   void check_safety_timeout();
   
   void set_steering_angle(double steering_angle_deg);
@@ -35,6 +36,7 @@ private:
                            double& nom_vs_accbrake_slave);
 
   // LabJack handle and parameters
+  bool wait_remove_brake;
   int handle_;
   std::string nominal_vs_steer_master_pin_;
   std::string nominal_vs_steer_slave_pin_;
@@ -60,6 +62,7 @@ private:
   // Steering parameters
   double max_steering_angle_;
   double steering_clip_;
+  double old_throttle;
 
   // Steering subscription
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr steering_sub_;
@@ -68,7 +71,11 @@ private:
 
   // Throttle/Brake subscription
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr throttle_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr brake_sub_;
   rclcpp::Time last_throttle_time_;
+  rclcpp::Time last_brake_time_;
+  double brake_to_throttle_delay_;
+  rclcpp::Time brake_release_time_;
   double throttle_timeout_sec_;
   
   // Safety timer

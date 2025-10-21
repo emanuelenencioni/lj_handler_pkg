@@ -26,6 +26,8 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   // Declare steering parameters
   this->declare_parameter<double>("max_steering_angle", melex_max_deg); // degrees
   this->declare_parameter<double>("steering_clip", 20); // Steering clip factor in degrees
+
+  this->declare_parameter<double>("brake_to_throttle_delay", 0.5);  // 0.5 seconds
   
   // Declare timeout parameters
   this->declare_parameter<double>("pose_timeout", 0.5); // seconds
@@ -34,7 +36,8 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   
   // Declare topic parameters //TODO: set to actual topics
   this->declare_parameter<std::string>("steering_topic", "/follower/steering_cmd");
-  this->declare_parameter<std::string>("throttle_topic", "/follower/acceleration_cmd");
+  this->declare_parameter<std::string>("throttle_topic", "/follower/pedal_cmd");
+  this->declare_parameter<std::string>("brake_topic", "/follower/brake_cmd");
   
   // Get parameters
   nominal_vs_steer_master_pin_ = this->get_parameter("nominal_vs_steer_M_pin").as_string();
@@ -61,11 +64,18 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
 
   std::string steering_topic = this->get_parameter("steering_topic").as_string();
   std::string throttle_topic = this->get_parameter("throttle_topic").as_string();
-  
+  std::string brake_topic = this->get_parameter("brake_topic").as_string();
   // Initialize last message times to current time
   last_steering_time_ = this->get_clock()->now();
   last_throttle_time_ = this->get_clock()->now();
-  
+  last_brake_time_ = this->get_clock()->now();
+
+  brake_to_throttle_delay_ = this->get_parameter("brake_to_throttle_delay").as_double();
+
+  wait_remove_brake = false;
+  old_throttle = 0.0;
+  brake_release_time_ = this->get_clock()->now();
+
   // Open LabJack T7
   int err = LJM_Open(LJM_dtT7, LJM_ctUSB, "ANY", &handle_);
   if (err != LJME_NOERROR) {
@@ -93,7 +103,9 @@ LJHandlerNode::LJHandlerNode() : Node("lj_handler")
   throttle_sub_ = this->create_subscription<std_msgs::msg::Float32>(
     throttle_topic, 10,
     std::bind(&LJHandlerNode::throttle_callback, this, std::placeholders::_1));
-  
+  brake_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+    brake_topic, 10,
+    std::bind(&LJHandlerNode::brake_callback, this, std::placeholders::_1));
   // Create safety timer to check for timeouts
   safety_timer_ = this->create_wall_timer(
     std::chrono::duration<double>(safety_check_period),
@@ -146,14 +158,77 @@ void LJHandlerNode::throttle_callback(const std_msgs::msg::Float32::SharedPtr ms
   // Get throttle value (expected range: -1.0 to 1.0)
   // -1.0 = full brake, 0.0 = neutral, 1.0 = full throttle
   double throttle_value = msg->data;
+  throttle_value = throttle_value;
+  
+  // Detect transition from brake (negative) to throttle (positive)
+  if (old_throttle < 0 && throttle_value > 0) {
+    // Brake was pressed, now trying to accelerate
+    // Start neutral waiting period
+    brake_release_time_ = this->get_clock()->now();
+    wait_remove_brake = true;
+    
+    RCLCPP_INFO(this->get_logger(), 
+                "Brake-to-throttle transition detected. Enforcing %.2fs neutral period.",
+                brake_to_throttle_delay_);
+  }
+  
+  // If we're in the waiting period after brake release
+  if (wait_remove_brake) {
+    double time_since_brake_release = 
+        (this->get_clock()->now() - brake_release_time_).seconds();
+    
+    if (time_since_brake_release < brake_to_throttle_delay_) {
+      // Still in waiting period - force neutral
+      throttle_value = 0.0;
+      
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                           "Neutral period: %.2fs / %.2fs",
+                           time_since_brake_release, brake_to_throttle_delay_);
+    } else {
+      // Waiting period complete
+      wait_remove_brake = false;
+      RCLCPP_INFO(this->get_logger(), 
+                  "Neutral period complete (%.2fs). Throttle enabled.",
+                  time_since_brake_release);
+    }
+  }
   
   // Clamp to valid range
-  throttle_value = std::max(-1.0, std::min(1.0, throttle_value));
+  throttle_value = std::max(0.0, std::min(1.0, throttle_value));
   
   RCLCPP_DEBUG(this->get_logger(), "Throttle command: %.2f", throttle_value);
   
   // Apply throttle/brake
   set_throttle_brake(throttle_value);
+  
+  // Update last applied value
+  old_throttle = throttle_value;
+}
+
+void LJHandlerNode::brake_callback(const std_msgs::msg::Float32::SharedPtr msg)
+{
+  // Update last brake time
+  last_brake_time_ = this->get_clock()->now();
+  
+  double brake_value = msg->data;
+  brake_value = -brake_value; // Invert and scale to match throttle range
+  
+  // Clamp to valid range
+  brake_value = std::max(0.0, std::min(1.0, brake_value));
+  
+  RCLCPP_DEBUG(this->get_logger(), "Brake command: %.2f", brake_value);
+  
+  // Apply throttle/brake
+  set_throttle_brake(brake_value);
+  
+  // Update last applied value
+  old_throttle = brake_value;
+  
+  // If we were waiting for brake release and now braking again, cancel the wait
+  if (wait_remove_brake && brake_value < 0) {
+    wait_remove_brake = false;
+    RCLCPP_DEBUG(this->get_logger(), "Brake applied again - canceling neutral wait period");
+  }
 }
 
 void LJHandlerNode::check_safety_timeout()

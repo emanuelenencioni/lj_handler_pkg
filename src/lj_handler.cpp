@@ -126,15 +126,14 @@ void LJHandlerNode::steering_callback(const std_msgs::msg::Float32::SharedPtr ms
   // Update last steering time
   last_steering_time_ = this->get_clock()->now();
 
-  // Get steering value in radians and convert to degrees
+  //convert to degrees
   double steering_deg = msg->data * 180.0 / M_PI;
-  
   // Clamp to max steering angle
   steering_deg = std::max(-steering_clip_, std::min(steering_clip_, steering_deg));
-  
+
+  steering_deg = steering_deg * -1.0;
   RCLCPP_DEBUG(this->get_logger(), "Steering command: %.2f rad (%.2f deg)", 
                msg->data, steering_deg);
-
   // Apply steering
   set_steering_angle(steering_deg);
 }
@@ -182,8 +181,8 @@ void LJHandlerNode::check_safety_timeout()
 
 void LJHandlerNode::set_steering_angle(double steering_angle_deg)
 {
-  // Map steering angle to voltage
-  // -max_angle -> input_voltage_min_, 0° -> center_voltage_, +max_angle -> input_voltage_max_
+  // Map steering angle to voltage ratio
+  // -max_angle -> 0.0, 0° -> 0.5, +max_angle -> 1.0
   double angle_ratio = (steering_angle_deg + max_steering_angle_) / (2.0 * max_steering_angle_);
   angle_ratio = std::max(0.0, std::min(1.0, angle_ratio)); // Clamp to [0, 1]
   
@@ -192,67 +191,27 @@ void LJHandlerNode::set_steering_angle(double steering_angle_deg)
   
   // Read nominal voltages
   double nom_vs_steer_master, nom_vs_steer_slave, ph1, ph2;
-  int err = read_nominal_voltages(nom_vs_steer_master, nom_vs_steer_slave, 
-                                   ph1, ph2);
+  int err = read_nominal_voltages(nom_vs_steer_master, nom_vs_steer_slave, ph1, ph2);
   if (err != LJME_NOERROR) {
     RCLCPP_WARN(this->get_logger(), "Failed to read nominal voltages for steering");
     return;
   }
-    // Clamp the input voltage to the expected range
-  desired_voltage = std::max(input_voltage_min_, std::min(input_voltage_max_, desired_voltage));
   
-  // Normalize the desired voltage to a ratio from 0.0 to 1.0
-  double master1_ratio = (desired_voltage - input_voltage_min_) / voltage_range;
-  
-  // Calculate voltage limits
-  double master_max_out_v = nom_vs_steer_master * this->steering_max_perc_;
-  double master_min_out_v = nom_vs_steer_master * this->steering_min_perc_;
-  double slave_min_out_v = nom_vs_steer_slave * this->steering_min_perc_;
-  double slave_max_out_v = nom_vs_steer_slave * this->steering_max_perc_;
-
-  // First pair (M1, S1)
-  double master1_voltage = nom_vs_steer_master * master1_ratio;
-  master1_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master1_voltage));
-  
-  double slave1_voltage = nom_vs_steer_slave * (1.0 - master1_ratio);
-  slave1_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave1_voltage));
-  
-  // Second pair (M2, S2) works in opposition
-  double master2_ratio = 1 - master1_ratio;
-  double master2_voltage = nom_vs_steer_master * master2_ratio;
-  master2_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master2_voltage));
-
-  double slave2_voltage = nom_vs_steer_slave * (1.0 - master2_ratio);
-  slave2_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave2_voltage));
-  
-  // Write voltages to DACs
-  double voltages[4] = {master1_voltage, master2_voltage, slave1_voltage, slave2_voltage};
-  
-  int errorAddress = INITIAL_ERR_ADDRESS;
-  const char* dac_names_arr[4] = {steering_dac_names_[0].c_str(), steering_dac_names_[1].c_str(),
-                                   steering_dac_names_[2].c_str(), steering_dac_names_[3].c_str()};
-  err = LJM_eWriteNames(handle_, 4, dac_names_arr, voltages, &errorAddress);
-  
-  if (err != LJME_NOERROR) {
-    char errName[LJM_MAX_NAME_SIZE];
-    LJM_ErrorToString(err, errName);
-    RCLCPP_WARN(this->get_logger(), "Error writing to %s DACs: %s (address: %d)", 
-                "steering", errName, errorAddress);
-    return;
-  }
-  
-  double control_percentage = (master1_ratio * 200.0) - 100.0;
-  RCLCPP_INFO(this->get_logger(),
-              "%s: %.1f%% (%.2fV) -> M1: %.2fV, S1: %.2fV | M2: %.2fV, S2: %.2fV",
-              "steering", control_percentage, desired_voltage,
-              master1_voltage, slave1_voltage, master2_voltage, slave2_voltage);
-
+  // Apply control using common function
+  set_control_axis(desired_voltage, 
+                   nom_vs_steer_master, 
+                   nom_vs_steer_slave,
+                   steering_dac_names_, 
+                   steering_min_perc_, 
+                   steering_max_perc_,
+                   "Steering",
+                   true); // opposition mode
 }
 
 void LJHandlerNode::set_throttle_brake(double throttle_value)
 {
-  // Map throttle value (-1.0 to 1.0) to voltage
-  // -1.0 -> input_voltage_min_, 0.0 -> center_voltage_, 1.0 -> input_voltage_max_
+  // Map throttle value (-1.0 to 1.0) to voltage ratio (0.0 to 1.0)
+  // -1.0 -> 0.0, 0.0 -> 0.5, 1.0 -> 1.0
   double throttle_ratio = (throttle_value + 1.0) / 2.0;
   throttle_ratio = std::max(0.0, std::min(1.0, throttle_ratio)); // Clamp to [0, 1]
   
@@ -261,70 +220,31 @@ void LJHandlerNode::set_throttle_brake(double throttle_value)
   
   // Read nominal voltages
   double ph1, ph2, nom_vs_accbrake_master, nom_vs_accbrake_slave;
-  int err = read_nominal_voltages(ph1, ph2,
-                                   nom_vs_accbrake_master, nom_vs_accbrake_slave);
+  int err = read_nominal_voltages(ph1, ph2, nom_vs_accbrake_master, nom_vs_accbrake_slave);
   if (err != LJME_NOERROR) {
     RCLCPP_WARN(this->get_logger(), "Failed to read nominal voltages for throttle");
     return;
   }
   
-    // Clamp the input voltage to the expected range
-  desired_voltage = std::max(input_voltage_min_, std::min(input_voltage_max_, desired_voltage));
-  
-  // Normalize the desired voltage to a ratio from 0.0 to 1.0
-  double master1_ratio = (desired_voltage - input_voltage_min_) / voltage_range;
-  
-  // Calculate voltage limits
-  double master_max_out_v = nom_vs_accbrake_master * throttle_max_perc_;
-  double master_min_out_v = nom_vs_accbrake_master * throttle_min_perc_;
-  double slave_min_out_v = nom_vs_accbrake_slave * throttle_min_perc_;
-  double slave_max_out_v = nom_vs_accbrake_slave * throttle_max_perc_;
-
-  // First pair (M1, S1)
-  double master1_voltage = nom_vs_accbrake_master * master1_ratio;
-  master1_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master1_voltage));
-  
-  double slave1_voltage = nom_vs_accbrake_slave * (1.0 - master1_ratio);
-  slave1_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave1_voltage));
-  
-  // Second pair (M2, S2) works in opposition
-  double master2_ratio = 1- master1_ratio;
-  double master2_voltage = nom_vs_accbrake_master * master2_ratio;
-  master2_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master2_voltage));
-
-  double slave2_voltage = nom_vs_accbrake_slave - slave1_voltage;
-  slave2_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave2_voltage));
-  
-  // Write voltages to DACs
-  double voltages[4] = {master1_voltage, master2_voltage, slave1_voltage, slave2_voltage};
-  
-  int errorAddress = INITIAL_ERR_ADDRESS;
-  const char* dac_names_arr[4] = {throttle_dac_names_[0].c_str(), throttle_dac_names_[1].c_str(),
-                                   throttle_dac_names_[2].c_str(), throttle_dac_names_[3].c_str()};
-  err = LJM_eWriteNames(handle_, 4, dac_names_arr, voltages, &errorAddress);
-  
-  if (err != LJME_NOERROR) {
-    char errName[LJM_MAX_NAME_SIZE];
-    LJM_ErrorToString(err, errName);
-    RCLCPP_WARN(this->get_logger(), "Error writing to %s DACs: %s (address: %d)", 
-                "throttle", errName, errorAddress);
-    return;
-  }
-  
-  double control_percentage = (master1_ratio * 200.0) - 100.0;
-  RCLCPP_INFO(this->get_logger(),
-              "%s: %.1f%% (%.2fV) -> M1: %.2fV, S1: %.2fV | M2: %.2fV, S2: %.2fV",
-              "throttle", control_percentage, desired_voltage,
-              master1_voltage, slave1_voltage, master2_voltage, slave2_voltage);
+  // Apply control using common function
+  set_control_axis(desired_voltage,
+                   nom_vs_accbrake_master, 
+                   nom_vs_accbrake_slave,
+                   throttle_dac_names_, 
+                   throttle_min_perc_, 
+                   throttle_max_perc_,
+                   "Throttle",
+                   true); // opposition mode
 }
 
 void LJHandlerNode::set_control_axis(double desired_voltage,
-                                     double nom_vs_accbrake_master,
+                                     double nom_vs_master,
                                      double nom_vs_slave,
                                      const std::vector<std::string>& dac_names,
                                      double min_perc,
                                      double max_perc,
-                                     const std::string& axis_name, const bool opposition=true)
+                                     const std::string& axis_name,
+                                     const bool opposition)
 {
   // Clamp the input voltage to the expected range
   desired_voltage = std::max(input_voltage_min_, std::min(input_voltage_max_, desired_voltage));
@@ -334,27 +254,24 @@ void LJHandlerNode::set_control_axis(double desired_voltage,
   double master1_ratio = (desired_voltage - input_voltage_min_) / voltage_range;
   
   // Calculate voltage limits
-  double master_max_out_v = nom_vs_accbrake_master * max_perc;
-  double master_min_out_v = nom_vs_accbrake_master * min_perc;
+  double master_max_out_v = nom_vs_master * max_perc;
+  double master_min_out_v = nom_vs_master * min_perc;
   double slave_min_out_v = nom_vs_slave * min_perc;
   double slave_max_out_v = nom_vs_slave * max_perc;
   
   // First pair (M1, S1)
-  double master1_voltage = nom_vs_accbrake_master * master1_ratio;
+  double master1_voltage = nom_vs_master * master1_ratio;
   master1_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master1_voltage));
   
   double slave1_voltage = nom_vs_slave * (1.0 - master1_ratio);
   slave1_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave1_voltage));
   
-  // Second pair (M2, S2) works in opposition
-  double master2_ratio = master1_ratio;
-  if (opposition)
-    master2_ratio = 1.0 - master1_ratio;
-
-  double master2_voltage = nom_vs_accbrake_master * master2_ratio;
+  // Second pair (M2, S2) - can work in opposition or parallel
+  double master2_ratio = opposition ? (1.0 - master1_ratio) : master1_ratio;
+  double master2_voltage = nom_vs_master * master2_ratio;
   master2_voltage = std::max(master_min_out_v, std::min(master_max_out_v, master2_voltage));
   
-  double slave2_voltage = nom_vs_slave - slave1_voltage;
+  double slave2_voltage = nom_vs_slave * (1.0 - master2_ratio);
   slave2_voltage = std::max(slave_min_out_v, std::min(slave_max_out_v, slave2_voltage));
   
   // Write voltages to DACs
